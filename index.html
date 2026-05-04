@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Taskboard</title>
+  <link rel="stylesheet" href="style.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=Inconsolata:wght@300;400;500&display=swap" rel="stylesheet"/>
+</head>
+<body>
+
+  <div class="grain"></div>
+
+  <main class="app">
+
+    <header class="header">
+      <div class="header-top">
+        <span class="label">TASKBOARD</span>
+        <span class="date" id="currentDate"></span>
+      </div>
+      <h1 class="title">What needs<br/><em>doing?</em></h1>
+      <div class="stats">
+        <span id="remainingCount">0</span> remaining &nbsp;·&nbsp;
+        <span id="doneCount">0</span> done
+      </div>
+    </header>
+
+    <div class="input-row">
+      <input
+        type="text"
+        id="taskInput"
+        class="task-input"
+        placeholder="Add a new task…"
+        maxlength="200"
+        autocomplete="off"
+      />
+      <button class="add-btn" id="addBtn" aria-label="Add task">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <line x1="10" y1="3" x2="10" y2="17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="3" y1="10" x2="17" y2="10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- API error banner -->
+    <div class="error-banner" id="errorBanner" style="display:none;"></div>
+
+    <div class="filters">
+      <button class="filter-btn active" data-filter="all">All</button>
+      <button class="filter-btn" data-filter="active">Active</button>
+      <button class="filter-btn" data-filter="done">Done</button>
+    </div>
+
+    <ul class="task-list" id="taskList"></ul>
+
+    <div class="empty-state" id="emptyState">
+      <div class="empty-icon">✦</div>
+      <p>Nothing here yet.<br/>Add your first task above.</p>
+    </div>
+
+    <footer class="footer">
+      <button class="clear-btn" id="clearDoneBtn">Clear completed</button>
+    </footer>
+
+  </main>
+
+  <script>
+    // ── Config ───────────────────────────────────────────────────────────────
+    const API = "http://localhost:5000/api";
+
+    // ── State ────────────────────────────────────────────────────────────────
+    let filter = "all";
+
+    // ── DOM ──────────────────────────────────────────────────────────────────
+    const taskInput    = document.getElementById("taskInput");
+    const addBtn       = document.getElementById("addBtn");
+    const taskList     = document.getElementById("taskList");
+    const emptyState   = document.getElementById("emptyState");
+    const remainingEl  = document.getElementById("remainingCount");
+    const doneEl       = document.getElementById("doneCount");
+    const clearDoneBtn = document.getElementById("clearDoneBtn");
+    const filterBtns   = document.querySelectorAll(".filter-btn");
+    const dateEl       = document.getElementById("currentDate");
+    const errorBanner  = document.getElementById("errorBanner");
+
+    // ── Date ─────────────────────────────────────────────────────────────────
+    dateEl.textContent = new Date().toLocaleDateString("en-US", {
+      weekday: "short", month: "short", day: "numeric"
+    }).toUpperCase();
+
+    // ── API Helpers ──────────────────────────────────────────────────────────
+    async function apiFetch(path, options = {}) {
+      try {
+        const res = await fetch(API + path, {
+          headers: { "Content-Type": "application/json" },
+          ...options
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Server error");
+        hideError();
+        return data;
+      } catch (err) {
+        showError(err.message.includes("fetch")
+          ? "Cannot reach server. Is app.py running on port 5000?"
+          : err.message
+        );
+        return null;
+      }
+    }
+
+    // ── Error Banner ─────────────────────────────────────────────────────────
+    function showError(msg) {
+      errorBanner.textContent = "⚠ " + msg;
+      errorBanner.style.display = "block";
+    }
+    function hideError() {
+      errorBanner.style.display = "none";
+    }
+
+    // ── Fetch & Render ───────────────────────────────────────────────────────
+    async function loadTasks() {
+      const data = await apiFetch(`/tasks?filter=${filter}`);
+      if (!data) return;
+
+      remainingEl.textContent = data.stats.remaining;
+      doneEl.textContent      = data.stats.done;
+
+      if (data.tasks.length === 0) {
+        taskList.innerHTML = "";
+        emptyState.classList.add("visible");
+      } else {
+        emptyState.classList.remove("visible");
+        taskList.innerHTML = data.tasks.map(taskHTML).join("");
+        bindTaskEvents();
+      }
+    }
+
+    // ── Task HTML ────────────────────────────────────────────────────────────
+    function taskHTML(task) {
+      return `
+        <li class="task-item ${task.done ? "done" : ""}" data-id="${task.id}">
+          <button class="check-btn ${task.done ? "checked" : ""}" data-id="${task.id}" aria-label="Toggle task"></button>
+          <span class="task-text">${escapeHTML(task.text)}</span>
+          <button class="delete-btn" data-id="${task.id}" aria-label="Delete task">✕</button>
+        </li>`;
+    }
+
+    function bindTaskEvents() {
+      taskList.querySelectorAll(".check-btn").forEach(btn =>
+        btn.addEventListener("click", () => toggleTask(btn.dataset.id, btn))
+      );
+      taskList.querySelectorAll(".delete-btn").forEach(btn =>
+        btn.addEventListener("click", () => deleteTask(btn.dataset.id))
+      );
+    }
+
+    // ── Add Task ─────────────────────────────────────────────────────────────
+    async function addTask() {
+      const text = taskInput.value.trim();
+      if (!text) {
+        taskInput.classList.add("shake");
+        setTimeout(() => taskInput.classList.remove("shake"), 400);
+        return;
+      }
+
+      addBtn.disabled = true;
+      const task = await apiFetch("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ text })
+      });
+      addBtn.disabled = false;
+
+      if (task) {
+        taskInput.value = "";
+        taskInput.focus();
+        await loadTasks();
+      }
+    }
+
+    // ── Toggle Done ──────────────────────────────────────────────────────────
+    async function toggleTask(id, btn) {
+      const isDone = btn.classList.contains("checked");
+      await apiFetch(`/tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ done: !isDone })
+      });
+      await loadTasks();
+    }
+
+    // ── Delete Task ──────────────────────────────────────────────────────────
+    async function deleteTask(id) {
+      const el = document.querySelector(`.task-item[data-id="${id}"]`);
+      if (el) {
+        el.classList.add("removing");
+        await new Promise(r => el.addEventListener("animationend", r, { once: true }));
+      }
+      await apiFetch(`/tasks/${id}`, { method: "DELETE" });
+      await loadTasks();
+    }
+
+    // ── Clear Done ───────────────────────────────────────────────────────────
+    async function clearDone() {
+      const doneItems = document.querySelectorAll(".task-item.done");
+      doneItems.forEach(el => el.classList.add("removing"));
+      if (doneItems.length) {
+        await new Promise(r => setTimeout(r, 250));
+      }
+      await apiFetch("/tasks/clear-done", { method: "DELETE" });
+      await loadTasks();
+    }
+
+    // ── Escape HTML ──────────────────────────────────────────────────────────
+    function escapeHTML(str) {
+      return str
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // ── Extra CSS ────────────────────────────────────────────────────────────
+    const s = document.createElement("style");
+    s.textContent = `
+      @keyframes shake {
+        0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-6px)} 40%,80%{transform:translateX(6px)}
+      }
+      .shake { animation: shake .35s ease; }
+      .error-banner {
+        background: rgba(255,95,95,0.1);
+        border: 1px solid rgba(255,95,95,0.3);
+        color: #ff7070;
+        border-radius: 6px;
+        padding: 10px 16px;
+        font-size: .82rem;
+        margin-bottom: 16px;
+        letter-spacing: .03em;
+      }
+    `;
+    document.head.appendChild(s);
+
+    // ── Event Listeners ──────────────────────────────────────────────────────
+    addBtn.addEventListener("click", addTask);
+    taskInput.addEventListener("keydown", e => { if (e.key === "Enter") addTask(); });
+    clearDoneBtn.addEventListener("click", clearDone);
+    filterBtns.forEach(btn => {
+      btn.addEventListener("click", () => {
+        filter = btn.dataset.filter;
+        filterBtns.forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        loadTasks();
+      });
+    });
+
+    // ── Init ─────────────────────────────────────────────────────────────────
+    loadTasks();
+  </script>
+</body>
+</html>
